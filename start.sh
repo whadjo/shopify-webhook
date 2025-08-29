@@ -1,4 +1,5 @@
 #!/bin/bash
 export FLASK_APP=app.py
 export FLASK_ENV=production
-flask run --host=0.0.0.0 --port=$PORT
+# Render fournit le port via $PORT
+exec gunicorn app:app --bind 0.0.0.0:$PORT --workers 3
