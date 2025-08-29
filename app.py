@@ -61,5 +61,7 @@ def webhook():
     return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
-    log("🚀 Démarrage du serveur Flask")
-    app.run(host="0.0.0.0", port=5000)
+    
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🚀 Démarrage du serveur Flask sur le port {port}")
+    app.run(host="0.0.0.0", port=port)
