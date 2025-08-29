@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 
 app = Flask(__name__)
@@ -15,7 +15,6 @@ HEADERS = {
 }
 
 def log(msg):
-    """Affiche un log avec timestamp"""
     print(f"[{datetime.now(timezone.utc).isoformat()}] {msg}")
 
 def update_variant_price(variant_id, new_price):
@@ -31,37 +30,60 @@ def update_variant_price(variant_id, new_price):
     r.raise_for_status()
     log(f"✅ Prix mis à jour pour variant {variant_id} → {new_price}")
 
+def find_variant_recent(inventory_item_id, minutes=10):
+    """Cherche le variant correspondant à inventory_item_id parmi les produits mis à jour récemment"""
+    since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    since_str = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}/products.json?limit=250&updated_at_min={since_str}"
+
+    while url:
+        r = requests.get(url, headers=HEADERS)
+        r.raise_for_status()
+        products = r.json().get("products", [])
+        for product in products:
+            for variant in product.get("variants", []):
+                if variant.get("inventory_item_id") == inventory_item_id:
+                    return variant, product.get("tags","")
+        # Pagination
+        if "Link" in r.headers and 'rel="next"' in r.headers["Link"]:
+            url = r.headers["Link"].split(";")[0].strip("<> ")
+        else:
+            url = None
+    return None, None
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.json
     log(f"⚡ Webhook reçu : {data}")
-    log(f"⚡ Webhook reçu : {data.get('title', 'Produit inconnu')}")
 
-    if "variants" in data:
-        for variant in data["variants"]:
-            compare_at = variant.get("compare_at_price")
-            qty = variant.get("inventory_quantity")
-            product_tags = [t.strip().lower() for t in data.get("tags","").split(",")]
+    inventory_item_id = data.get("inventory_item_id")
+    if not inventory_item_id:
+        log("⚠️ Pas d'inventory_item_id dans la payload")
+        return jsonify({"status": "ok"}), 200
 
-            log(f" - Variant {variant['id']} : stock={qty}, compare_at_price={compare_at}, tags={product_tags}")
+    variant, tags = find_variant_recent(inventory_item_id)
+    if not variant:
+        log(f"⚠️ Aucun variant récent trouvé pour inventory_item_id {inventory_item_id}")
+        return jsonify({"status": "ok"}), 200
 
-            if "liquidation" in product_tags:
-                log(f" ⏩ Ignoré (tag liquidation)")
-                continue
+    compare_at = variant.get("compare_at_price")
+    qty = data.get("available")  # stock actuel envoyé par le webhook
+    product_tags = [t.strip().lower() for t in tags.split(",")]
 
-            if compare_at and qty is not None and qty <= 6:
-                log(f" ⚡ Stock faible, remise à prix original")
-                update_variant_price(variant["id"], compare_at)
-                time.sleep(0.5)  # éviter 429
-            else:
-                log(f" ✅ Aucun changement nécessaire")
+    log(f" - Variant {variant['id']} : stock={qty}, compare_at_price={compare_at}, tags={product_tags}")
+
+    if "liquidation" in product_tags:
+        log(f" ⏩ Ignoré (tag liquidation)")
+    elif compare_at and qty is not None and qty <= 6:
+        log(f" ⚡ Stock faible, remise à prix original")
+        update_variant_price(variant['id'], compare_at)
+        time.sleep(0.5)  # éviter 429
     else:
-        log(" ⚠️ Pas de variants dans la payload")
+        log(f" ✅ Aucun changement nécessaire")
 
     return jsonify({"status": "ok"}), 200
 
 if __name__ == "__main__":
-    
     port = int(os.environ.get("PORT", 5000))
-    print(f"🚀 Démarrage du serveur Flask sur le port {port}")
+    log(f"🚀 Démarrage du serveur Flask sur le port {port}")
     app.run(host="0.0.0.0", port=port)
